@@ -143,8 +143,7 @@
                     }
                 }
             } catch (error) {
-                console.error('接続エラー:', error);
-                statusDiv.innerText = "エラーまたは切断されました";
+                statusDiv.innerText = "エラー詳細: " + error.name + " / " + error.message;
             }
         });
     </script>
