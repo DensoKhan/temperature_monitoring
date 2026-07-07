@@ -134,7 +134,7 @@
                             chart.data.datasets[0].data.push(temperature);
 
                             // グラフのデータ点を最新50件に制限（スマホのメモリ負荷軽減）
-                            if (chart.data.labels.length > 50) {
+                            if (chart.data.labels.length > 30) {
                                 chart.data.labels.shift();
                                 chart.data.datasets[0].data.shift();
                             }
