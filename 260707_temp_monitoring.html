@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>水温モニタ (TWELITE)</title>
+    <!-- グラフ描画ライブラリ Chart.js の読み込み -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 10px; text-align: center; }
+        #connectBtn { padding: 15px 30px; font-size: 18px; margin-bottom: 20px; background-color: #007bff; color: white; border: none; border-radius: 5px; }
+        #status { font-weight: bold; margin-bottom: 10px; }
+        #latestData { font-size: 24px; color: #d9534f; margin-bottom: 20px; }
+        canvas { max-width: 100%; }
+    </style>
+</head>
+<body>
+    <h2>TWELITE 水温モニタ</h2>
+    <button id="connectBtn">MONO STICKに接続</button>
+    <div id="status">未接続</div>
+    <div id="latestData">-- ℃</div>
+    <canvas id="tempChart"></canvas>
+
+    <script>
+        const connectBtn = document.getElementById('connectBtn');
+        const statusDiv = document.getElementById('status');
+        const latestDataDiv = document.getElementById('latestData');
+        
+        let startTime = 0;
+        let port;
+        let reader;
+
+        // --- グラフの初期設定 ---
+        const ctx = document.getElementById('tempChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: { 
+                labels: [], 
+                datasets: [{ 
+                    label: '水温 (℃)', 
+                    data: [], 
+                    borderColor: '#d9534f',
+                    backgroundColor: 'rgba(217, 83, 79, 0.2)',
+                    fill: true,
+                    tension: 0.1
+                }] 
+            },
+            options: {
+                scales: {
+                    x: { title: { display: true, text: '経過時間 (秒)' } },
+                    y: { title: { display: true, text: '温度 (℃)' } }
+                }
+            }
+        });
+
+        // --- TWELITEのデータ解析ロジック（Pythonコードからの移植） ---
+        function parseTweliteAd4(lineStr) {
+            lineStr = lineStr.trim();
+            // フォーマットチェック (':'から始まり、適切な長さがあるか)[cite: 1]
+            if (!lineStr.startsWith(':') || lineStr.length < 47) return null;
+
+            try {
+                // 先頭の':'を除外し、16進数文字列をバイト配列に変換[cite: 1]
+                const hexStr = lineStr.substring(1);
+                const data = new Uint8Array(hexStr.length / 2);
+                for (let i = 0; i < data.length; i++) {
+                    data[i] = parseInt(hexStr.substring(i * 2, i * 2 + 2), 16);
+                }
+
+                // 標準アプリのコマンド(0x81)か確認[cite: 1]
+                if (data[1] !== 0x81) return null;
+
+                // 0始まりのインデックスで、AD4の上位8bitは21番目、下位2bit群は22番目[cite: 1]
+                const ad4_upper = data[21];
+                const ad_lower_all = data[22];
+
+                // 下位2bit群の最上位2bitがAD4の下位データ[cite: 1]
+                const ad4_lower = (ad_lower_all >> 6) & 0x03;
+
+                // 電圧計算 (mV)[cite: 1]
+                const v_mv = (ad4_upper * 16) + (ad4_lower * 4);
+                return v_mv;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // 電圧(mV)を温度(℃)に変換する[cite: 1]
+        function calculateTemperature(v_mv) {
+            return (v_mv - 250) / 12.5; //[cite: 1]
+        }
+
+        // --- シリアル通信処理 ---
+        connectBtn.addEventListener('click', async () => {
+            try {
+                // USBデバイスの選択ダイアログを表示し、ポートを開く (ボーレート115200)[cite: 1]
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 115200 }); 
+                
+                statusDiv.innerText = "接続中...";
+                connectBtn.style.display = 'none';
+                startTime = Date.now();
+
+                const textDecoder = new TextDecoderStream();
+                const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+                reader = textDecoder.readable.getReader();
+
+                let buffer = "";
+
+                // データ読み取りループ
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) {
+                        reader.releaseLock();
+                        break;
+                    }
+                    
+                    buffer += value;
+                    const lines = buffer.split(/\r?\n/);
+                    buffer = lines.pop(); // 最後の未完了の行はバッファに残す
+
+                    for (const line of lines) {
+                        const v_mv = parseTweliteAd4(line);
+                        
+                        if (v_mv !== null) {
+                            const temperature = calculateTemperature(v_mv);
+                            const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(1);
+
+                            // 画面上の数値を更新
+                            latestDataDiv.innerText = `${temperature.toFixed(1)} ℃`;
+
+                            // グラフにデータを追加
+                            chart.data.labels.push(elapsedTime);
+                            chart.data.datasets[0].data.push(temperature);
+
+                            // グラフのデータ点を最新50件に制限（スマホのメモリ負荷軽減）
+                            if (chart.data.labels.length > 50) {
+                                chart.data.labels.shift();
+                                chart.data.datasets[0].data.shift();
+                            }
+                            chart.update();
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('接続エラー:', error);
+                statusDiv.innerText = "エラーまたは切断されました";
+            }
+        });
+    </script>
+</body>
+</html>
